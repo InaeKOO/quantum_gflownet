@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from typing import List
-
+import torch
 from gflownet.utils.misc import StrictDataClass
 
 
@@ -61,6 +61,13 @@ class QM9MOOTaskConfig(StrictDataClass):
     objectives: List[str] = field(default_factory=lambda: ["gap", "qed", "sa"])
     online_pareto_front: bool = True
 
+@dataclass
+class QuantumCircuitTaskConfig:
+    target_unitary: torch.Tensor = torch.eye(4, dtype=torch.cfloat)
+    num_qubits: int = 2
+    n_valid: int = 15
+    n_valid_repeats: int = 2
+    log_topk: bool = True
 
 @dataclass
 class TasksConfig(StrictDataClass):
@@ -68,3 +75,5 @@ class TasksConfig(StrictDataClass):
     qm9_moo: QM9MOOTaskConfig = field(default_factory=QM9MOOTaskConfig)
     seh: SEHTaskConfig = field(default_factory=SEHTaskConfig)
     seh_moo: SEHMOOTaskConfig = field(default_factory=SEHMOOTaskConfig)
+    qcs: QuantumCircuitTaskConfig = QuantumCircuitTaskConfig()
+
