@@ -1,284 +1,198 @@
-from itertools import chain
-from typing import Dict, Optional, Union, Callable
+import math
+from typing import Optional
 
 import torch
 import torch.nn as nn
-import torch_geometric.data as gd
-import torch_geometric.nn as gnn
-from torch import Tensor
-from torch_geometric.utils import add_self_loops
 
 from gflownet.config import Config
-from gflownet.envs.circuit_building_env import (
-    CircuitBuildingEnv,
-    GraphActionCategorical,
-    GraphActionType,
-    action_type_to_mask,
-    QuantumGateType
-)
+from gflownet.envs.graph_building_env import GraphActionCategorical, GraphBuildingEnvContext
+from gflownet.envs.circuit_building_env import CircuitBatch
+from gflownet.models.config import SeqPosEnc
 
 
-def mlp(n_in, n_hid, n_out, n_layer, act=nn.LeakyReLU):
-    """Creates a fully-connected network with no activation after the last layer."""
-    n = [n_in] + [n_hid] * n_layer + [n_out]
-    return nn.Sequential(*sum([[nn.Linear(n[i], n[i + 1]), act()] for i in range(n_layer + 1)], [])[:-1])
+class MLPWithDropout(nn.Module):
+    def __init__(self, in_dim, out_dim, hidden_layers, dropout_prob, init_drop=False):
+        super(MLPWithDropout, self).__init__()
+        self.in_dim = in_dim
+        self.out_dim = out_dim
+        layers = [nn.Linear(in_dim, hidden_layers[0]), nn.ReLU()]
+        layers += [nn.Dropout(dropout_prob)] if init_drop else []
+        for i in range(1, len(hidden_layers)):
+            layers.extend([nn.Linear(hidden_layers[i - 1], hidden_layers[i]), nn.ReLU(), nn.Dropout(dropout_prob)])
+        layers.append(nn.Linear(hidden_layers[-1], out_dim))
+        self.model = nn.Sequential(*layers)
 
-
-class CircuitTransformer(nn.Module):
-    """A transformer model specialized for quantum circuits.
-    
-    This model takes in:
-    - Node features (qubits)
-    - Edge features (quantum gates)
-    - Graph features (circuit-level information)
-    """
-
-    def __init__(
-        self, x_dim, e_dim, g_dim, num_emb=64, num_layers=3, num_heads=2, num_noise=0, ln_type="pre", concat=True
-    ):
-        super().__init__()
-        self.num_layers = num_layers
-        self.num_noise = num_noise
-        assert ln_type in ["pre", "post"]
-        self.ln_type = ln_type
-
-        # Input feature processing
-        self.x2h = mlp(x_dim + num_noise, num_emb, num_emb, 2)
-        self.e2h = mlp(e_dim, num_emb, num_emb, 2)
-        self.c2h = mlp(max(1, g_dim), num_emb, num_emb, 2)
-        
-        # Transformer layers
-        n_att = num_emb * num_heads if concat else num_emb
-        self.graph2emb = nn.ModuleList(
-            sum(
-                [
-                    [
-                        gnn.GENConv(num_emb, num_emb, num_layers=1, aggr="add", norm=None),
-                        gnn.TransformerConv(num_emb * 2, n_att // num_heads, edge_dim=num_emb, heads=num_heads),
-                        nn.Linear(n_att, num_emb),
-                        gnn.LayerNorm(num_emb, affine=False),
-                        mlp(num_emb, num_emb * 4, num_emb, 1),
-                        gnn.LayerNorm(num_emb, affine=False),
-                        nn.Linear(num_emb, num_emb * 2),
-                    ]
-                    for i in range(self.num_layers)
-                ],
-                [],
-            )
-        )
-
-    def forward(self, g: gd.Batch, cond: Optional[torch.Tensor]):
-        """Forward pass for quantum circuit processing.
-        
-        Args:
-            g: Batch of quantum circuits
-            cond: Optional conditioning information
-            
-        Returns:
-            node_embeddings: Per-qubit embeddings
-            graph_embeddings: Per-circuit embeddings
-        """
-        if self.num_noise > 0:
-            x = torch.cat([g.x, torch.rand(g.x.shape[0], self.num_noise, device=g.x.device)], 1)
-        else:
-            x = g.x
-            
-        # Process input features
-        o = self.x2h(x)
-        e = self.e2h(g.edge_attr)
-        c = self.c2h(cond if cond is not None else torch.ones((g.num_graphs, 1), device=g.x.device))
-        
-        # Add conditioning nodes
-        num_total_nodes = g.x.shape[0]
-        u, v = torch.arange(num_total_nodes, device=o.device), g.batch + num_total_nodes
-        aug_edge_index = torch.cat([g.edge_index, torch.stack([u, v]), torch.stack([v, u])], 1)
-        
-        # Add edge features for conditioning edges
-        e_p = torch.zeros((num_total_nodes * 2, e.shape[1]), device=g.x.device)
-        e_p[:, 0] = 1  # Bias term
-        aug_e = torch.cat([e, e_p], 0)
-        
-        # Add self loops
-        aug_edge_index, aug_e = add_self_loops(aug_edge_index, aug_e, "mean")
-        aug_batch = torch.cat([g.batch, torch.arange(c.shape[0], device=o.device)], 0)
-        
-        # Process through transformer layers
-        o = torch.cat([o, c], 0)
-        for i in range(self.num_layers):
-            gen, trans, linear, norm1, ff, norm2, cscale = self.graph2emb[i * 7 : (i + 1) * 7]
-            cs = cscale(c[aug_batch])
-            
-            if self.ln_type == "post":
-                agg = gen(o, aug_edge_index, aug_e)
-                l_h = linear(trans(torch.cat([o, agg], 1), aug_edge_index, aug_e))
-                scale, shift = cs[:, : l_h.shape[1]], cs[:, l_h.shape[1] :]
-                o = norm1(o + l_h * scale + shift, aug_batch)
-                o = norm2(o + ff(o), aug_batch)
-            else:
-                o_norm = norm1(o, aug_batch)
-                agg = gen(o_norm, aug_edge_index, aug_e)
-                l_h = linear(trans(torch.cat([o_norm, agg], 1), aug_edge_index, aug_e))
-                scale, shift = cs[:, : l_h.shape[1]], cs[:, l_h.shape[1] :]
-                o = o + l_h * scale + shift
-                o = o + ff(norm2(o, aug_batch))
-
-        # Split node and graph embeddings
-        o_final = o[: -c.shape[0]]
-        glob = torch.cat([gnn.global_mean_pool(o_final, g.batch), o[-c.shape[0] :]], 1)
-        return o_final, glob
+    def forward(self, x):
+        return self.model(x)
 
 
 class CircuitTransformerGFN(nn.Module):
-    """CircuitTransformer class for a GFlowNet which outputs a GraphActionCategorical.
-    
-    Specialized for quantum circuit actions.
-    """
+    """A transformer-encoder based GFN model for quantum circuits with multiple qubit sequences."""
 
-    # Map action types to graph parts
-    _action_type_to_graph_part = {
-        GraphActionType.Stop: "graph",
-        GraphActionType.AddQubit: "node",
-        GraphActionType.AddGate: "non_edge",
-        GraphActionType.SetGateParam: "edge",
-        GraphActionType.RemoveGate: "edge",
-        GraphActionType.RemoveQubit: "node",
-    }
-
-    # Map graph parts to batch keys
-    _graph_part_to_key = {
-        "graph": None,
-        "node": "x",
-        "non_edge": "non_edge_index",
-        "edge": "edge_index",
-    }
-
-    action_type_to_key = lambda action_type: CircuitTransformerGFN._graph_part_to_key.get(
-        CircuitTransformerGFN._action_type_to_graph_part.get(action_type)
-    )
+    ctx: GraphBuildingEnvContext
 
     def __init__(
         self,
-        env_ctx: CircuitBuildingEnv,
+        env_ctx,
         cfg: Config,
-        num_graph_out=1,
-        do_bck=False,
+        num_state_out=1,
     ):
         super().__init__()
-        self.transf = CircuitTransformer(
-            x_dim=env_ctx.num_node_dim,
-            e_dim=env_ctx.num_edge_dim,
-            g_dim=env_ctx.num_cond_dim,
-            num_emb=cfg.model.num_emb,
-            num_layers=cfg.model.num_layers,
-            num_heads=cfg.model.graph_transformer.num_heads,
-            ln_type=cfg.model.graph_transformer.ln_type,
-            concat=cfg.model.graph_transformer.concat_heads,
-        )
+        self.ctx = env_ctx
+        self.num_state_out = num_state_out
+        num_hid = cfg.model.num_emb
+        num_outs = env_ctx.num_actions + num_state_out
+        mc = cfg.model
         
-        self.env_ctx = env_ctx
-        num_emb = cfg.model.num_emb
-        num_final = num_emb
-        num_glob_final = num_emb * 2
-        num_edge_feat = num_emb if env_ctx.edges_are_unordered else num_emb * 2
+        # Positional encoding for sequence positions
+        if mc.seq_transformer.posenc == SeqPosEnc.Pos:
+            self.pos = PositionalEncoding(num_hid, dropout=cfg.model.dropout, max_len=cfg.algo.max_len + 2)
+        elif mc.seq_transformer.posenc == SeqPosEnc.Rotary:
+            self.pos = RotaryEmbedding(num_hid)
+            
+        self.use_cond = env_ctx.num_cond_dim > 0
+        self.embedding = nn.Embedding(env_ctx.num_tokens, num_hid)
         
-        self.edges_are_duplicated = env_ctx.edges_are_duplicated
-        self.edges_are_unordered = env_ctx.edges_are_unordered
-        self.action_type_order = env_ctx.action_type_order
-
-        # Define input/output dimensions for each action type
-        self._action_type_to_num_inputs_outputs = {
-            GraphActionType.Stop: (num_glob_final, 1),  # Stop action uses global features
-            GraphActionType.AddQubit: (num_final, 1),
-            GraphActionType.AddGate: (num_edge_feat, len(QuantumGateType)),
-            GraphActionType.SetGateParam: (num_edge_feat, 1),  # For rotation angles
-            GraphActionType.RemoveGate: (num_edge_feat, 1),
-            GraphActionType.RemoveQubit: (num_final, 1),
-            GraphActionType.AddNode: (num_final, 1),  # Base graph actions
-            GraphActionType.AddEdge: (num_edge_feat, 1),
-            GraphActionType.SetNodeAttr: (num_final, 1),
-            GraphActionType.SetEdgeAttr: (num_edge_feat, 1),
-            GraphActionType.RemoveNode: (num_final, 1),
-            GraphActionType.RemoveEdge: (num_edge_feat, 1),
-            GraphActionType.RemoveNodeAttr: (num_final, 1),
-            GraphActionType.RemoveEdgeAttr: (num_edge_feat, 1),
-        }
-
-        self._action_type_to_key = {
-            at: self._graph_part_to_key[self._action_type_to_graph_part[at]] 
-            for at in self._action_type_to_graph_part
-        }
-
-        # Create MLPs for each action type
-        mlps = {}
-        for atype in chain(env_ctx.action_type_order, env_ctx.bck_action_type_order if do_bck else []):
-            num_in, num_out = self._action_type_to_num_inputs_outputs[atype]
-            mlps[atype.cname] = mlp(num_in, num_emb, num_out, cfg.model.num_layers)
-        self.mlps = nn.ModuleDict(mlps)
-
-        self.do_bck = do_bck
-        if do_bck:
-            self.bck_action_type_order = env_ctx.bck_action_type_order
-
-        self.emb2graph_out = mlp(num_glob_final, num_emb, num_graph_out, cfg.model.num_layers)
-        self._logZ = mlp(max(1, env_ctx.num_cond_dim), num_emb * 2, 1, 2)
+        # Transformer encoder for processing sequences
+        encoder_layers = nn.TransformerEncoderLayer(num_hid, mc.seq_transformer.num_heads, num_hid, dropout=mc.dropout)
+        self.encoder = nn.TransformerEncoder(encoder_layers, mc.num_layers)
+        
+        # Qubit-specific processing
+        self.qubit_embedding = nn.Linear(env_ctx.num_qubits, num_hid)
+        
+        self._logZ = nn.Linear(env_ctx.num_cond_dim, 1)
+        
+        if self.use_cond:
+            self.output = MLPWithDropout(num_hid + num_hid, num_outs, [4 * num_hid, 4 * num_hid], mc.dropout)
+            self.cond_embed = nn.Linear(env_ctx.num_cond_dim, num_hid)
+        else:
+            self.output = MLPWithDropout(num_hid, num_outs, [2 * num_hid, 2 * num_hid], mc.dropout)
+            
+        self.num_hid = num_hid
 
     def logZ(self, cond_info: Optional[torch.Tensor]):
         if cond_info is None:
-            return self._logZ(torch.ones((1, 1), device=self._logZ[0].weight.device))
+            return self._logZ(torch.ones((1, 1), device=self._logZ.weight.device))
         return self._logZ(cond_info)
 
-    def _make_cat(self, g: gd.Batch, emb: Dict[str, Tensor], action_types: list[GraphActionType]):
-        # Handle the case where there are no nodes in the graph
-        if not hasattr(g, 'x'):
-            g.x = torch.zeros((0, 1), device=emb['graph'].device)
+    def forward(self, xs: CircuitBatch, cond, batched=False):
+        """Process a batch of quantum circuits, where each circuit contains multiple qubit sequences.
+        
+        Args:
+            xs: CircuitBatch containing multiple qubit sequences
+            cond: Conditional information
+            batched: Whether to process in batched mode
             
-        return GraphActionCategorical(
-            g,
-            raw_logits=[self.mlps[t.cname](emb[self._action_type_to_graph_part[t]]) for t in action_types],
-            keys=[self._action_type_to_key[t] for t in action_types],
-            action_masks=[action_type_to_mask(t, g) for t in action_types],
-            types=action_types,
+        Returns:
+            GraphActionCategorical for actions and state predictions
+        """
+        # Get token embeddings for all sequences
+        x = self.embedding(xs.x)  # (time, batch, num_qubits, nemb)
+        
+        # Add positional encoding
+        x = self.pos(x)  # (time, batch, num_qubits, nemb)
+        
+        # Process each qubit sequence through the transformer
+        # Reshape to combine batch and qubit dimensions for transformer processing
+        batch_size = x.size(1)
+        num_qubits = x.size(2)
+        x = x.reshape(x.size(0), -1, x.size(-1))  # (time, batch*num_qubits, nemb)
+        
+        # Apply transformer encoder
+        x = self.encoder(x, 
+                        src_key_padding_mask=xs.mask.reshape(-1, batch_size * num_qubits),
+                        mask=generate_square_subsequent_mask(x.shape[0]).to(x.device))
+        
+        # Reshape back to separate qubit dimension
+        x = x.reshape(x.size(0), batch_size, num_qubits, x.size(-1))
+        
+        # Pool the final state for each qubit sequence
+        pooled_x = x[xs.lens - 1, torch.arange(x.shape[1])]  # (batch, num_qubits, nemb)
+        
+        # Add qubit-specific embeddings
+        qubit_emb = self.qubit_embedding(torch.eye(num_qubits, device=x.device))  # (num_qubits, nemb)
+        pooled_x = pooled_x + qubit_emb.unsqueeze(0)  # (batch, num_qubits, nemb)
+        
+        # Combine qubit information
+        pooled_x = pooled_x.mean(dim=1)  # (batch, nemb)
+
+        if self.use_cond:
+            cond_var = self.cond_embed(cond)  # (batch, nemb)
+            cond_var = torch.tile(cond_var, (x.shape[0], 1, 1)) if batched else cond_var
+            final_rep = torch.cat((x, cond_var), axis=-1) if batched else torch.cat((pooled_x, cond_var), axis=-1)
+        else:
+            final_rep = x if batched else pooled_x
+
+        out: torch.Tensor = self.output(final_rep)
+        ns = self.num_state_out
+        
+        if batched:
+            out = out.transpose(1, 0).contiguous().reshape((-1, out.shape[2]))
+            state_preds = out[xs.logit_idx, 0:ns]
+            stop_logits = out[xs.logit_idx, ns : ns + 1]
+            add_node_logits = out[xs.logit_idx, ns + 1 :]
+        else:
+            xs.num_graphs = out.shape[0]
+            state_preds = out[:, 0:ns]
+            stop_logits = out[:, ns : ns + 1]
+            add_node_logits = out[:, ns + 1 :]
+
+        return (
+            GraphActionCategorical(
+                xs,
+                raw_logits=[stop_logits, add_node_logits],
+                keys=[None, None],
+                types=self.ctx.action_type_order,
+                slice_dict={},
+            ),
+            state_preds,
         )
 
-    def forward(self, g: gd.Batch, cond: Optional[torch.Tensor]):
-        # Get embeddings
-        node_embeddings, graph_embeddings = self.transf(g, cond)
-        
-        # Process non-edges (potential new gates)
-        if hasattr(g, "non_edge_index"):
-            ne_row, ne_col = g.non_edge_index
-            if self.edges_are_unordered:
-                non_edge_embeddings = node_embeddings[ne_row] + node_embeddings[ne_col]
-            else:
-                non_edge_embeddings = torch.cat([node_embeddings[ne_row], node_embeddings[ne_col]], 1)
-        else:
-            non_edge_embeddings = None
-            
-        # Process existing edges (gates)
-        if self.edges_are_duplicated:
-            e_row, e_col = g.edge_index[:, ::2]
-        else:
-            e_row, e_col = g.edge_index
-            
-        if self.edges_are_unordered:
-            edge_embeddings = node_embeddings[e_row] + node_embeddings[e_col]
-        else:
-            edge_embeddings = torch.cat([node_embeddings[e_row], node_embeddings[e_col]], 1)
 
-        # Prepare embeddings for action prediction
-        emb = {
-            "graph": graph_embeddings,
-            "node": node_embeddings,
-            "edge": edge_embeddings,
-            "non_edge": non_edge_embeddings,
-        }
+def generate_square_subsequent_mask(sz: int):
+    """Generates an upper-triangular matrix of -inf, with zeros on diag."""
+    return torch.triu(torch.ones(sz, sz) * float("-inf"), diagonal=1)
 
-        # Get graph-level output
-        graph_out = self.emb2graph_out(graph_embeddings)
-        
-        # Get forward and backward action distributions
-        fwd_cat = self._make_cat(g, emb, self.action_type_order)
-        if self.do_bck:
-            bck_cat = self._make_cat(g, emb, self.bck_action_type_order)
-            return fwd_cat, bck_cat, graph_out
-        return fwd_cat, graph_out 
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, dropout=0.1, max_len=5000):
+        super(PositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0).transpose(0, 1)
+        self.register_buffer("pe", pe)
+
+    def forward(self, x):
+        x = x + self.pe[: x.size(0), :]
+        return self.dropout(x)
+
+
+class RotaryEmbedding(nn.Module):
+    def __init__(self, dim, interpolation_factor=1.0, base=10000, base_rescale_factor=1.0):
+        super().__init__()
+        base *= base_rescale_factor ** (dim / (dim - 2))
+
+        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
+        self.register_buffer("inv_freq", inv_freq)
+
+        assert interpolation_factor >= 1.0
+        self.interpolation_factor = interpolation_factor
+
+    def get_emb(self, seq_len, device):
+        t = torch.arange(seq_len, device=device).type_as(self.inv_freq)
+        t = t / self.interpolation_factor
+
+        freqs = torch.einsum("i , j -> i j", t, self.inv_freq)
+        freqs = torch.cat((freqs, freqs), dim=-1)
+
+        return freqs
+
+    def forward(self, x, scale=1):
+        x1, x2 = x.reshape(x.shape[:-1] + (2, -1)).unbind(dim=-2)
+        xrot = torch.cat((-x2, x1), dim=-1)
+        freqs = self.get_emb(x.shape[0], x.device)[:, None, :]
+        return (x * freqs.cos() * scale) + (xrot * freqs.sin() * scale) 
