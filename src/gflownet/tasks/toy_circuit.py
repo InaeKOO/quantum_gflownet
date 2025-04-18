@@ -175,11 +175,11 @@ def main():
     """Example of how this model can be run."""
     config = init_empty(Config())
     config.log_dir = "./logs/debug_run_toy_circuit"
-    config.device = "cuda"
+    config.device = "cuda" if torch.cuda.is_available() else "cpu"
     config.overwrite_existing_exp = True
     config.num_training_steps = 2_000
     config.checkpoint_every = 200
-    config.num_workers = 4
+    config.num_workers = 4 if torch.cuda.is_available() else 0
     config.num_qubits = 1
     config.gates = ["H", "X", "Y", "Z"]  # Basic quantum gates
     config.print_every = 1

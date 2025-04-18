@@ -1,6 +1,6 @@
 desc: noDesc
 log_dir: ./logs/debug_run_toy_circuit
-device: cuda
+device: cpu
 seed: 0
 validate_every: 1000
 checkpoint_every: 200
@@ -10,16 +10,16 @@ start_at_step: 0
 num_final_gen_steps: null
 num_validation_gen_steps: 1
 num_training_steps: 2000
-num_workers: 4
+num_workers: 0
 num_qubits: 1
 gates:
 - H
 - X
 - 'Y'
 - Z
-hostname: DESKTOP-INAE
+hostname: gu-inhoeui-MacBookPro.local
 pickle_mp_messages: false
-git_hash: a75388b
+git_hash: e29b3f6
 overwrite_existing_exp: true
 algo:
   method: TB

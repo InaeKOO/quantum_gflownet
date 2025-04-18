@@ -70,7 +70,7 @@ class CircuitBatch:
         self.circuits = circuits
         # Each circuit is a tensor of shape (num_qubits, max_seq_len)
         self.x = pad_sequence(circuits, batch_first=False, padding_value=pad)
-        self.mask = self.x.eq(pad).T
+        self.mask = self.x.eq(pad)
         self.lens = torch.tensor([len(i) for i in circuits], dtype=torch.long)
         self.logit_idx = self.x.ne(pad).T.flatten().nonzero().flatten()
         self.num_graphs = self.lens.sum().item()
