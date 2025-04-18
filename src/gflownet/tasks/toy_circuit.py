@@ -1,7 +1,9 @@
 import socket
 from typing import Dict, List, Tuple
 
+import math
 import torch
+import numpy as np
 from torch import Tensor
 
 from gflownet import GFNTask, LogScalar, ObjectProperties
@@ -12,6 +14,73 @@ from gflownet.online_trainer import StandardOnlineTrainer
 from gflownet.utils.conditioning import TemperatureConditional
 from gflownet.utils.transforms import to_logreward
 
+def random_unitary(num_qubits: int, dtype: torch.dtype = torch.complex128,) -> torch.Tensor:
+    d = 2 ** num_qubits
+    real = torch.randn(d, d, dtype=dtype)
+    imag = torch.randn(d, d, dtype=dtype)
+    Z = real + 1j * imag
+    Q, R = torch.linalg.qr(Z)
+    diag_R = torch.diagonal(R)
+    phase = diag_R / torch.abs(diag_R)      
+    Q = Q * phase.unsqueeze(0)           
+    return Q
+
+def calculate_fidelity(circuit_str: str, target: torch.Tensor) -> float:
+    """
+    circuit_str: 
+      Qubit 0: H X Z
+      Qubit 1: Y Z
+      ...
+    target: [d,d] tensor (d=2**num_qubits)
+
+    return: float, fidelity = |Tr(U† target)| / d
+    """
+    lines = [line.strip() for line in circuit_str.strip().splitlines() if line.strip()]
+    qubit_seqs: List[List[str]] = []
+    for line in lines:
+        # "Qubit i: G1 G2 G3"
+        _, rhs = line.split(":", 1)
+        gates = rhs.strip().split()
+        qubit_seqs.append(gates)
+
+    num_qubits = len(qubit_seqs)
+    d = 2 ** num_qubits
+
+    U = torch.eye(d, dtype=target.dtype, device=target.device)
+
+    SQ = {
+        'H': (1/math.sqrt(2)) * torch.tensor([[1,  1],
+                                              [1, -1]], 
+                                             dtype=target.dtype, device=target.device),
+        'X': torch.tensor([[0, 1],
+                           [1, 0]],
+                          dtype=target.dtype, device=target.device),
+        'Y': torch.tensor([[0, -1j],
+                           [1j, 0]],
+                          dtype=target.dtype, device=target.device),
+        'Z': torch.tensor([[1,  0],
+                           [0, -1]],
+                          dtype=target.dtype, device=target.device),
+    }
+
+    for q_idx, seq in enumerate(qubit_seqs):
+        for g in seq:
+            if g in SQ:
+                G = SQ[g]
+                op = None
+                for i in range(num_qubits):
+                    mat = G if i == q_idx else torch.eye(2, dtype=target.dtype, device=target.device)
+                    op = mat if op is None else torch.kron(op, mat)
+            elif g == 'C':
+                # TODO: CNOT, CZ 등 다중 큐빗 게이트 구현 필요
+                raise NotImplementedError("Gate 'C' (multi-qubit) is not implemented yet.")
+            else:
+                raise ValueError(f"Unknown gate symbol: {g}")
+
+            U = op @ U
+
+    fid = torch.abs(torch.trace(U.conj().T @ target)) / d
+    return fid.item()
 
 class ToyCircuitTask(GFNTask):
     """Sets up a task where the reward is based on the presence of specific gate patterns in the quantum circuit.
@@ -19,15 +88,13 @@ class ToyCircuitTask(GFNTask):
 
     def __init__(
         self,
-        patterns: List[str],  # List of gate patterns to look for
+        matrix: torch.Tensor,
         num_qubits: int,  # Number of qubits in the circuit
         cfg: Config,
     ) -> None:
-        self.patterns = patterns
         self.num_qubits = num_qubits
         self.temperature_conditional = TemperatureConditional(cfg)
         self.num_cond_dim = self.temperature_conditional.encoding_size()
-        self.norm = cfg.algo.max_len / min(map(len, patterns))
 
     def sample_conditional_information(self, n: int, train_it: int) -> Dict[str, Tensor]:
         return self.temperature_conditional.sample(n)
@@ -37,7 +104,7 @@ class ToyCircuitTask(GFNTask):
 
     def compute_obj_properties(self, objs: List[str]) -> Tuple[ObjectProperties, Tensor]:
         # Convert circuit string representation to tensor of rewards
-        rs = torch.tensor([sum([circuit.count(p) for p in self.patterns]) for circuit in objs]).float() / self.norm
+        rs = torch.tensor([calculate_fidelity(circuit,self.matrix) for circuit in objs]).float()
         return ObjectProperties(rs[:, None]), torch.ones(len(objs), dtype=torch.bool)
 
 
@@ -80,22 +147,21 @@ class ToyCircuitTrainer(StandardOnlineTrainer):
         )
 
     def setup_task(self):
-        # Define patterns to look for in the circuits
+        # Define matrix to look for in the circuits
+        matrix = random_unitary(self.cfg.num_qubits)
         # For example, "HX" means Hadamard followed by X gate on the same qubit
-        patterns = ["HX", "XH", "HH"]
         self.task = ToyCircuitTask(
-            patterns=patterns,
-            num_qubits=2,  # Using 2 qubits for this toy example
+            matrix = matrix,
+            num_qubits=self.cfg.num_qubits,  # Using 2 qubits for this toy example
             cfg=self.cfg,
         )
 
     def setup_env_context(self):
         # Define available gates and number of qubits
-        gates = ["H", "X", "Y", "Z", "C"]  # Basic quantum gates
-        self.env = CircuitBuildingEnv(num_qubits=2)  # 2-qubit circuits
+        self.env = CircuitBuildingEnv(num_qubits=self.cfg.num_qubits)  # 2-qubit circuits
         self.ctx = AutoregressiveCircuitBuildingContext(
-            gates=gates,
-            num_qubits=2,
+            gates=self.cfg.gates,
+            num_qubits=self.cfg.num_qubits,
             num_cond_dim=self.task.num_cond_dim,
         )
 
@@ -114,6 +180,8 @@ def main():
     config.num_training_steps = 2_000
     config.checkpoint_every = 200
     config.num_workers = 4
+    config.num_qubits = 1
+    config.gates = ["H", "X", "Y", "Z"]  # Basic quantum gates
     config.print_every = 1
     config.cond.temperature.sample_dist = "constant"
     config.cond.temperature.dist_params = [2.0]
