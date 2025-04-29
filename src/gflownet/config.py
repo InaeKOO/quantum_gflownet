@@ -98,8 +98,6 @@ class Config(StrictDataClass):
     num_validation_gen_steps: Optional[int] = None
     num_training_steps: int = 10_000
     num_workers: int = 0
-    num_qubits: int = 0
-    gates: Optional[List[str]] = None
     hostname: Optional[str] = None
     pickle_mp_messages: bool = False
     git_hash: Optional[str] = None

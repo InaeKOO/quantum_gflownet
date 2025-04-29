@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
 
 from gflownet.utils.misc import StrictDataClass
 
@@ -63,7 +63,7 @@ class QM9MOOTaskConfig(StrictDataClass):
 
 
 @dataclass
-class QuantumCircuitTaskConfig(StrictDataClass):
+class ToyCircuitTaskConfig(StrictDataClass):
     """Config for the QuantumCircuitTask
     
     Attributes
@@ -73,33 +73,8 @@ class QuantumCircuitTaskConfig(StrictDataClass):
     max_gates : int
         Maximum number of gates allowed in the circuit
     """
-    max_qubits: int = 10
-    max_gates: int = 100
-
-
-@dataclass
-class QuantumCircuitMOOTaskConfig(StrictDataClass):
-    """Config for the QuantumCircuitMOOTask
-    
-    Attributes
-    ----------
-    n_valid : int
-        The number of valid cond_info tensors to sample.
-    n_valid_repeats : int
-        The number of times to repeat the valid cond_info tensors.
-    objectives : List[str]
-        The objectives to use for the multi-objective optimization. 
-        Should be a subset of ["depth", "gate_count", "fidelity"].
-    online_pareto_front : bool
-        Whether to calculate the pareto front online.
-    log_topk : bool
-        Whether to log the top-k rewards during validation.
-    """
-    n_valid: int = 15
-    n_valid_repeats: int = 128
-    objectives: List[str] = field(default_factory=lambda: ["depth", "gate_count", "fidelity"])
-    log_topk: bool = False
-    online_pareto_front: bool = True
+    num_qubits: int = 0
+    gates: Optional[List[str]] = None
 
 
 @dataclass
@@ -108,5 +83,4 @@ class TasksConfig(StrictDataClass):
     qm9_moo: QM9MOOTaskConfig = field(default_factory=QM9MOOTaskConfig)
     seh: SEHTaskConfig = field(default_factory=SEHTaskConfig)
     seh_moo: SEHMOOTaskConfig = field(default_factory=SEHMOOTaskConfig)
-    circuit: QuantumCircuitTaskConfig = field(default_factory=QuantumCircuitTaskConfig)
-    circuit_moo: QuantumCircuitMOOTaskConfig = field(default_factory=QuantumCircuitMOOTaskConfig)
+    toy_circuit: ToyCircuitTaskConfig = field(default_factory=ToyCircuitTaskConfig)

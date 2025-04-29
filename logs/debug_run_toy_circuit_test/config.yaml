@@ -1,16 +1,16 @@
 desc: noDesc
-log_dir: ./logs/debug_run_toy_seq
-device: cuda
+log_dir: ./logs/debug_run_toy_circuit_test
+device: cpu
 seed: 0
 validate_every: 1000
-checkpoint_every: 200
+checkpoint_every: null
 store_all_checkpoints: false
-print_every: 1
+print_every: 100
 start_at_step: 0
 num_final_gen_steps: null
 num_validation_gen_steps: 1
-num_training_steps: 2000
-num_workers: 4
+num_training_steps: 10000
+num_workers: 8
 hostname: DESKTOP-INAE
 pickle_mp_messages: false
 git_hash: 4c029e6
@@ -25,7 +25,7 @@ algo:
   max_nodes: 10
   max_edges: 128
   illegal_action_logreward: -75.0
-  train_random_action_prob: 0.05
+  train_random_action_prob: 0.0
   train_det_after: null
   valid_random_action_prob: 0.0
   sampling_tau: 0.9
@@ -120,15 +120,20 @@ task:
     log_topk: false
     online_pareto_front: true
   toy_circuit:
-    num_qubits: 0
-    gates: null
+    num_qubits: 1
+    gates:
+    - H
+    - X
+    - 'Y'
+    - Z
 cond:
   valid_sample_cond_info: true
   temperature:
-    sample_dist: constant
+    sample_dist: uniform
     dist_params:
-    - 2.0
-    num_thermometer_dim: 1
+    - 0.5
+    - 32
+    num_thermometer_dim: 32
   moo:
     num_objectives: 2
     num_thermometer_dim: 16

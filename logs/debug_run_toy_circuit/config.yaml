@@ -1,6 +1,6 @@
 desc: noDesc
 log_dir: ./logs/debug_run_toy_circuit
-device: cpu
+device: cuda
 seed: 0
 validate_every: 1000
 checkpoint_every: 200
@@ -11,15 +11,9 @@ num_final_gen_steps: null
 num_validation_gen_steps: 1
 num_training_steps: 2000
 num_workers: 0
-num_qubits: 1
-gates:
-- H
-- X
-- 'Y'
-- Z
-hostname: gu-inhoeui-MacBookPro.local
+hostname: DESKTOP-INAE
 pickle_mp_messages: false
-git_hash: e29b3f6
+git_hash: 4c029e6
 overwrite_existing_exp: true
 algo:
   method: TB
@@ -125,18 +119,12 @@ task:
     - mw
     log_topk: false
     online_pareto_front: true
-  circuit:
-    max_qubits: 10
-    max_gates: 100
-  circuit_moo:
-    n_valid: 15
-    n_valid_repeats: 128
-    objectives:
-    - depth
-    - gate_count
-    - fidelity
-    log_topk: false
-    online_pareto_front: true
+  toy_circuit:
+    num_qubits: 3
+    gates:
+    - P
+    - Q
+    - R
 cond:
   valid_sample_cond_info: true
   temperature:

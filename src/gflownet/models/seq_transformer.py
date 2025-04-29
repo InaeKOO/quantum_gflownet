@@ -78,8 +78,13 @@ class SeqTransformerGFN(nn.Module):
             If True, the it's assumed that the cond tensor is constant along a sequence, and the output is given
             at each timestep (of the autoregressive process), which works because we are using causal self-attenion.
             If False, only the last timesteps' output is returned, which one would use to sample the next token."""
+        #print("self.pos class:", self.pos.__class__)  
+        #print("module path:", self.pos.__class__.__module__)
+        print("xs.x: ", xs.x.size())
         x = self.embedding(xs.x)
         x = self.pos(x)  # (time, batch, nemb)
+        print(x.size())
+        print("xs.mask: ", xs.mask.size())
         x = self.encoder(x, src_key_padding_mask=xs.mask, mask=generate_square_subsequent_mask(x.shape[0]).to(x.device))
         pooled_x = x[xs.lens - 1, torch.arange(x.shape[1])]  # (batch, nemb)
 

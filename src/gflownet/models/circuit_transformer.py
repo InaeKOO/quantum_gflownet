@@ -57,9 +57,6 @@ class CircuitTransformerGFN(nn.Module):
         encoder_layers = nn.TransformerEncoderLayer(num_hid, mc.seq_transformer.num_heads, num_hid, dropout=mc.dropout)
         self.encoder = nn.TransformerEncoder(encoder_layers, mc.num_layers)
         
-        # Qubit-specific processing
-        self.qubit_embedding = nn.Linear(env_ctx.num_qubits, num_hid)
-        
         self._logZ = nn.Linear(env_ctx.num_cond_dim, 1)
         
         if self.use_cond:
@@ -86,35 +83,18 @@ class CircuitTransformerGFN(nn.Module):
         Returns:
             GraphActionCategorical for actions and state predictions
         """
-        # Get token embeddings for all sequences
-        x = self.embedding(xs.x)  # (time, batch, num_qubits, nemb)
-        
-        # Add positional encoding
-        x = self.pos(x)  # (time, batch, num_qubits, nemb)
-        
-        # Process each qubit sequence through the transformer
-        # Reshape to combine batch and qubit dimensions for transformer processing
-        batch_size = x.size(1)
-        num_qubits = x.size(2)
-        x = x.reshape(x.size(0), -1, x.size(-1))  # (time, batch*num_qubits, nemb)
-        
-        # Apply transformer encoder
-        x = self.encoder(x, 
-                        src_key_padding_mask=xs.mask.reshape(-1, batch_size * num_qubits),
-                        mask=generate_square_subsequent_mask(x.shape[0]).to(x.device))
-        
-        # Reshape back to separate qubit dimension
-        x = x.reshape(x.size(0), batch_size, num_qubits, x.size(-1))
-        
-        # Pool the final state for each qubit sequence
-        pooled_x = x[xs.lens - 1, torch.arange(x.shape[1])]  # (batch, num_qubits, nemb)
-        
-        # Add qubit-specific embeddings
-        qubit_emb = self.qubit_embedding(torch.eye(num_qubits, device=x.device))  # (num_qubits, nemb)
-        pooled_x = pooled_x + qubit_emb.unsqueeze(0)  # (batch, num_qubits, nemb)
-        
-        # Combine qubit information
-        pooled_x = pooled_x.mean(dim=1)  # (batch, nemb)
+        #print("self.pos class:", self.pos.__class__)  
+        #print("module path:", self.pos.__class__.__module__)
+        #print("xs.x: ", xs.x.size())
+        #print("xs type: ", type(xs))
+        x = self.embedding(xs.x)
+        x = self.pos(x)  # (time, batch, nemb)
+        #print("x.size: ",x.size())
+        #print("xs.mask: ", xs.mask.size())
+        #x = x.squeeze(2)
+        #mask = xs.mask.squeeze(1)  # (batch_size, seq_len)
+        x = self.encoder(x, src_key_padding_mask=xs.mask, mask=generate_square_subsequent_mask(x.shape[0]).to(x.device))
+        pooled_x = x[xs.lens - 1, torch.arange(x.shape[1])]  # (batch, nemb)
 
         if self.use_cond:
             cond_var = self.cond_embed(cond)  # (batch, nemb)
@@ -122,7 +102,7 @@ class CircuitTransformerGFN(nn.Module):
             final_rep = torch.cat((x, cond_var), axis=-1) if batched else torch.cat((pooled_x, cond_var), axis=-1)
         else:
             final_rep = x if batched else pooled_x
-
+        
         out: torch.Tensor = self.output(final_rep)
         ns = self.num_state_out
         
