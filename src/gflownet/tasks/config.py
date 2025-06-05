@@ -74,7 +74,7 @@ class ToyCircuitTaskConfig(StrictDataClass):
         Maximum number of gates allowed in the circuit
     """
     num_qubits: int = 0
-    gates: Optional[List[str]] = None
+    gates: Optional[str] = None
 
 
 @dataclass

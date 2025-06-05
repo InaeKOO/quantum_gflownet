@@ -22,6 +22,7 @@ from gflownet.data.data_source import DataSource
 from gflownet.data.replay_buffer import ReplayBuffer
 from gflownet.envs.graph_building_env import GraphActionCategorical, GraphBuildingEnv, GraphBuildingEnvContext
 from gflownet.envs.seq_building_env import SeqBatch
+from gflownet.envs.circuit_building_env import CircuitBatch
 from gflownet.utils.misc import create_logger, set_main_process_device, set_worker_rng_seed
 from gflownet.utils.multiprocessing_proxy import mp_object_wrapper
 from gflownet.utils.sqlite_log import SQLiteLogHook
@@ -130,7 +131,7 @@ class GFNTrainer:
             wrapper = mp_object_wrapper(
                 obj,
                 self.cfg.num_workers,
-                cast_types=(gd.Batch, GraphActionCategorical, SeqBatch),
+                cast_types=(gd.Batch, GraphActionCategorical, SeqBatch, CircuitBatch),
                 pickle_messages=self.cfg.pickle_mp_messages,
             )
             self.to_terminate.append(wrapper.terminate)

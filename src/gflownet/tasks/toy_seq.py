@@ -113,6 +113,7 @@ def main():
     config.algo.train_random_action_prob = 0.05
 
     trial = ToySeqTrainer(config)
+    print("###########:", ToySeqTrainer.__bases__)
     trial.run()
 
 

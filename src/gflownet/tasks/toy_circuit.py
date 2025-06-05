@@ -4,6 +4,8 @@ import torch.multiprocessing as mp
 import socket
 from typing import Dict, List, Tuple
 import math
+import inspect
+from datetime import datetime
 
 import numpy as np
 from torch import Tensor
@@ -16,6 +18,16 @@ from gflownet.utils.conditioning import TemperatureConditional
 from gflownet.utils.transforms import to_logreward
 from gflownet.utils.circuit import sequence_to_matrices, total_matrix
 
+toffoli = torch.tensor([
+    [1,0,0,0,0,0,0,0],
+    [0,1,0,0,0,0,0,0],
+    [0,0,1,0,0,0,0,0],
+    [0,0,0,1,0,0,0,0],
+    [0,0,0,0,1,0,0,0],
+    [0,0,0,0,0,1,0,0],
+    [0,0,0,0,0,0,0,1],
+    [0,0,0,0,0,0,1,0],
+], dtype=torch.complex128)
 
 def random_unitary(
         num_qubits: int,
@@ -30,7 +42,9 @@ def random_unitary(
     diag_R = torch.diagonal(R)
     phase = diag_R / torch.abs(diag_R)
     Q = Q * phase.unsqueeze(0)
-    return Q
+    I = torch.eye(d, dtype=dtype, device=device)
+    return total_matrix(sequence_to_matrices("AGMP"))
+    #return toffoli
 
 def string_to_gate():
     pass
@@ -42,18 +56,23 @@ def calculate_fidelity(circuit_str: str, target: torch.Tensor) -> float:
 
     returns fidelity = |Tr(U^† target)| / d
     """
-    print("Input circuit string:", circuit_str)
+    #print("Input circuit string:", circuit_str)
+    if circuit_str.count('P') > 2 or circuit_str.count('Q') > 2 or circuit_str.count('R') > 2:
+        return 0
+    for i in range(1, len(circuit_str)):
+        if circuit_str[i] == circuit_str[i-1]:
+            return 0
     circuit_mat = total_matrix(sequence_to_matrices(circuit_str))
-    print("circuit_mat shape:", circuit_mat.shape)
-    print("target shape:", target.shape)
-    print("circuit_mat device:", circuit_mat.device)
-    print("target device:", target.device)
+    #print("circuit_mat shape:", circuit_mat.shape)
+    #print("target shape:", target.shape)
+    #print("circuit_mat device:", circuit_mat.device)
+    #print("target device:", target.device)
     # Ensure circuit_mat is on the same device as target
     circuit_mat = circuit_mat.to(target.device)
     d = target.shape[0]  # dimension of the matrix
     trace_val = (circuit_mat.mH @ target).trace()
-    return abs(trace_val) / d
-
+    fidelity = abs(trace_val) / d
+    return fidelity if fidelity > 1e-6 else 0
 
 class ToyCircuitTask(GFNTask):
     def __init__(
@@ -103,8 +122,8 @@ class ToyCircuitTrainer(StandardOnlineTrainer):
         cfg.model.num_layers = 4
 
         cfg.algo.method = "TB"
-        cfg.algo.max_nodes = 10
-        cfg.algo.max_len = 10
+        cfg.algo.max_nodes = 15
+        cfg.algo.max_len = 15
         cfg.algo.sampling_tau = 0.9
         cfg.algo.illegal_action_logreward = -75
         cfg.algo.train_random_action_prob = 0.0
@@ -145,21 +164,22 @@ class ToyCircuitTrainer(StandardOnlineTrainer):
 
 def main():
     config = init_empty(Config())
-    config.log_dir = "./logs/debug_run_toy_circuit"
+    config.log_dir = f"./logs/debug_run_toy_circuit_{datetime.now().strftime('%Y%m%d_%H%M')}"
     config.device = "cuda"
     config.overwrite_existing_exp = True
-    config.num_training_steps = 2000
+    config.num_training_steps = 100000
     config.checkpoint_every = 200
     config.num_workers = 0
     config.task.toy_circuit.num_qubits = 3
     # Reduce number of gates to avoid token index issues
-    config.task.toy_circuit.gates = ["P", "Q", "R"]  # Basic quantum gates
+    #config.task.toy_circuit.gates = ["A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R"]  # Basic quantum gates
+    config.task.toy_circuit.gates = "ABCDEFGHIJKLMNOPQR"
     config.print_every = 1
     config.cond.temperature.sample_dist = "constant"
     config.cond.temperature.dist_params = [2.0]
     config.cond.temperature.num_thermometer_dim = 1
     config.algo.train_random_action_prob = 0.05
-
+    
     trial = ToyCircuitTrainer(config)
     trial.run()
 

@@ -5,7 +5,6 @@ import torch
 from torch.nn.utils.rnn import pad_sequence
 from torch_geometric.data import Data
 
-
 from gflownet.envs.graph_building_env import (
     ActionIndex,
     Graph,
@@ -15,10 +14,9 @@ from gflownet.envs.graph_building_env import (
     GraphBuildingEnvContext,
 )
 
-def circuit_parent(circuit: List[Any]):
-    #input: circuit as a sequence
-    #output: the parent circuits as a sequence
-    return circuit.pop()
+gate_1 = ["A", "B", "C", "D", "E", "R", "P"]
+gate_2 = ["F", "G", "H", "I", "J", "P", "Q"]
+gate_3 = ["K", "L", "M", "N", "O", "Q", "R"]
 
 class QuantumCircuit(Graph):
     def __init__(self, num_qubits: int):
@@ -54,10 +52,43 @@ class CircuitBuildingEnv(GraphBuildingEnv):
 
     def parents(self, g: Graph):
         c: QuantumCircuit = deepcopy(g)  # type: ignore
-        if not len(c.circuit):
+        n = len(c.circuit)
+        if n == 0:
             return []
-        v = circuit_parent(c.circuit())
-        return [(GraphAction(GraphActionType.AddNode, value=v), c)]
+        parents = []
+        i = 1
+        first_gate = c.circuit[-1]
+        parents.append((GraphAction(GraphActionType.AddNode, value=first_gate), c.circuit[:-1]))
+        while i<n:
+            second_gate = c.circuit[-i-1]
+            if first_gate in gate_1 and second_gate in gate_1:
+                i += 1
+                continue
+            elif first_gate in gate_2 and second_gate in gate_2:
+                i += 1
+                continue
+            elif first_gate in gate_3 and second_gate in gate_3:
+                i += 1
+                continue
+            else:
+                parents.append((GraphAction(GraphActionType.AddNode, value=second_gate), c.circuit[:-i-1] + c.circuit[-i:]))
+                break
+        j = i + 1
+        while j<n:
+            third_gate = c.circuit[-j]
+            if third_gate in gate_1 and (first_gate in gate_1 or second_gate in gate_1):
+                j += 1
+                continue
+            elif third_gate in gate_2 and (first_gate in gate_2 or second_gate in gate_2):
+                j += 1
+                continue
+            elif third_gate in gate_3 and (first_gate in gate_3 or second_gate in gate_3):
+                j += 1
+                continue
+            else:
+                parents.append((GraphAction(GraphActionType.AddNode, value=third_gate), c.circuit[:-j] + c.circuit[-j+1:]))
+                break
+        return parents
 
 
     def reverse(self, g: Graph, ga: GraphAction):
@@ -91,7 +122,7 @@ class AutoregressiveCircuitBuildingContext(GraphBuildingEnvContext):
         self.num_tokens = len(gates) + 2  # Gates + BOS + PAD
         self.bos_token = len(gates)
         self.pad_token = len(gates) + 1
-        self.num_actions = len(gates) * num_qubits + 1  # (Gates × Qubits) + Stop
+        self.num_actions = len(gates) +1 # (Gates × Qubits) + Stop
         self.num_cond_dim = num_cond_dim
 
     def ActionIndex_to_GraphAction(self, g: Data, aidx: ActionIndex, fwd: bool = True) -> GraphAction:

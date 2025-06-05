@@ -167,6 +167,7 @@ def main_tb():
     # gradient step every `update_freq` episode.
     minibatch_loss = 0
     update_freq = 2
+    sampled_circuits = []
 
     logZs = []
     for episode in tqdm.tqdm(range(50000), ncols=40):
@@ -215,6 +216,8 @@ def main_tb():
             opt.zero_grad()
             minibatch_loss = 0
             logZs.append(model.logZ.item())
+            sampled_circuits.append(state)
+            
     f, ax = pp.subplots(2, 1, figsize=(10,6))
     pp.sca(ax[0])
     pp.plot(tb_losses)
@@ -225,6 +228,10 @@ def main_tb():
     pp.ylabel('estimated Z')
     pp.show()
     print(model.logZ.exp())
+    print(f"Final logZ: {model.logZ.exp()}")
+    print(f"Number of circuits sampled: {len(sampled_circuits)}")
+    print(f"Last 5 circuits: {sampled_circuits[-5:]}")
+    print(f"Best circuit fidelity: {max(fidelity_reward(circuit, target) for circuit in sampled_circuits)}")
 
 if __name__ == "__main__":
     main_tb() #1-qubit problem
