@@ -18,17 +18,6 @@ from gflownet.utils.conditioning import TemperatureConditional
 from gflownet.utils.transforms import to_logreward
 from gflownet.utils.circuit import sequence_to_matrices, total_matrix
 
-toffoli = torch.tensor([
-    [1,0,0,0,0,0,0,0],
-    [0,1,0,0,0,0,0,0],
-    [0,0,1,0,0,0,0,0],
-    [0,0,0,1,0,0,0,0],
-    [0,0,0,0,1,0,0,0],
-    [0,0,0,0,0,1,0,0],
-    [0,0,0,0,0,0,0,1],
-    [0,0,0,0,0,0,1,0],
-], dtype=torch.complex128)
-
 def random_unitary(
         num_qubits: int,
         dtype: torch.dtype = torch.complex128,
@@ -43,11 +32,15 @@ def random_unitary(
     phase = diag_R / torch.abs(diag_R)
     Q = Q * phase.unsqueeze(0)
     I = torch.eye(d, dtype=dtype, device=device)
-    return total_matrix(sequence_to_matrices("AGMP"))
-    #return toffoli
+    return total_matrix(sequence_to_matrices("WFNAPIG"))
 
-def string_to_gate():
-    pass
+def reward(x):
+    #k = 41.821  # steepness
+    #t = 0.8465  # threshold
+    #s = 1 / (1 + np.exp(-k * (x - t)))
+    b = math.log(0.1) / -0.25  # ≈ 9.21034
+    return math.exp(b * (x-1))
+    return np.clip(x * s, 0.0, 1.0)
 
 def calculate_fidelity(circuit_str: str, target: torch.Tensor) -> float:
     """
@@ -72,7 +65,8 @@ def calculate_fidelity(circuit_str: str, target: torch.Tensor) -> float:
     d = target.shape[0]  # dimension of the matrix
     trace_val = (circuit_mat.mH @ target).trace()
     fidelity = abs(trace_val) / d
-    return fidelity if fidelity > 1e-6 else 0
+    return reward(fidelity)
+
 
 class ToyCircuitTask(GFNTask):
     def __init__(
@@ -122,8 +116,8 @@ class ToyCircuitTrainer(StandardOnlineTrainer):
         cfg.model.num_layers = 4
 
         cfg.algo.method = "TB"
-        cfg.algo.max_nodes = 15
-        cfg.algo.max_len = 15
+        cfg.algo.max_nodes = 7
+        cfg.algo.max_len = 7
         cfg.algo.sampling_tau = 0.9
         cfg.algo.illegal_action_logreward = -75
         cfg.algo.train_random_action_prob = 0.0
@@ -171,9 +165,7 @@ def main():
     config.checkpoint_every = 200
     config.num_workers = 0
     config.task.toy_circuit.num_qubits = 3
-    # Reduce number of gates to avoid token index issues
-    #config.task.toy_circuit.gates = ["A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R"]  # Basic quantum gates
-    config.task.toy_circuit.gates = "ABCDEFGHIJKLMNOPQR"
+    config.task.toy_circuit.gates = "ABDFGIKLNPQRSTUVWX"
     config.print_every = 1
     config.cond.temperature.sample_dist = "constant"
     config.cond.temperature.dist_params = [2.0]
