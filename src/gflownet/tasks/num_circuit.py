@@ -185,7 +185,7 @@ class GateLenPredictor(nn.Module):
 # Global variable to hold the loaded gate length predictor model
 _gate_len_predictor = None
 
-def load_gate_len_predictor(model_path: str = None, device: str = "cuda"):
+def load_gate_len_predictor(model_path: str = "gatelen_predictor.pt", device: str = "cuda"):
     """Load the pre-trained gate length predictor model."""
     global _gate_len_predictor
     
