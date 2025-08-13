@@ -23,7 +23,7 @@ from gflownet.utils.circuit import sequence_to_matrices, total_matrix
 import torch.nn as nn
 import torch.nn.functional as F
 from dataclasses import dataclass
-
+inf = 999999999
 # ============= Gate Length Predictor Components (copied from unitary_num.py) =============
 
 def unitary_to_tensor(U: torch.Tensor) -> torch.Tensor:
@@ -47,48 +47,80 @@ class Unitary_encoder_config:
     dropout: float
 
 class PositionalEncoding2D(nn.Module):
-    """Simple 2D positional encoding (placeholder - you may need to implement based on genQC)"""
-    def __init__(self, d_model):
+    """2D positional encoding to match genQC implementation"""
+    def __init__(self, d_model, max_len=5000):
         super().__init__()
         self.d_model = d_model
+        # Create positional encoding tensor to match saved model shape [32, 5000]
+        self.pe = nn.Parameter(torch.randn(32, max_len))
     
     def forward(self, x):
         # Simple implementation - just return input for now
-        # You might need to implement proper 2D positional encoding
+        # The actual implementation would add positional encodings
         return x
 
 class DownBlock2D(nn.Module):
-    """Simple downsampling block"""
+    """Simple downsampling block to match genQC implementation"""
     def __init__(self, in_ch, out_ch, kernel_size, stride, padding):
         super().__init__()
-        self.conv = nn.Conv2d(in_ch, out_ch, kernel_size, stride, padding)
-        self.norm = nn.BatchNorm2d(out_ch)
+        self.conv1 = nn.Conv2d(in_ch, out_ch, kernel_size, stride, padding)
+        # No batch norm in the original genQC implementation
         self.act = nn.ReLU()
     
     def forward(self, x):
-        return self.act(self.norm(self.conv(x)))
+        return self.act(self.conv1(x))
+
+class TransformerBlock(nn.Module):
+    """Single transformer block with self-attention and feedforward to match genQC"""
+    def __init__(self, channels, num_heads=8, dropout=0.1):
+        super().__init__()
+        self.self_att = nn.MultiheadAttention(channels, num_heads, dropout=dropout, batch_first=True)
+        self.norm1 = nn.LayerNorm(channels)
+        self.norm2 = nn.LayerNorm(channels)
+        
+        # Feedforward network - same dimensions as input (not 4x expansion)
+        self.ff = nn.Module()
+        self.ff.proj1 = nn.Linear(channels, channels)
+        self.ff.proj2 = nn.Linear(channels, channels)
+        
+    def forward(self, x):
+        # Self-attention with residual connection
+        x_res = x
+        x = self.norm1(x)
+        x, _ = self.self_att(x, x, x)
+        x = x + x_res
+        
+        # Feedforward with residual connection
+        x_res = x
+        x = self.norm2(x)
+        x = F.gelu(self.ff.proj1(x))
+        x = self.ff.proj2(x)
+        x = x + x_res
+        
+        return x
 
 class SpatialTransformerSelfAttn(nn.Module):
     """Simplified spatial transformer with self-attention"""
     def __init__(self, channels, num_heads=8, depth=4, dropout=0.1):
         super().__init__()
         self.channels = channels
-        self.layers = nn.ModuleList([
-            nn.MultiheadAttention(channels, num_heads, dropout=dropout, batch_first=True)
+        self.norm = nn.LayerNorm(channels)
+        self.transformer_blocks = nn.ModuleList([
+            TransformerBlock(channels, num_heads, dropout)
             for _ in range(depth)
         ])
-        self.norms = nn.ModuleList([nn.LayerNorm(channels) for _ in range(depth)])
         
     def forward(self, x):
         # x: [B, C, H, W]
         B, C, H, W = x.shape
         x_flat = x.view(B, C, H*W).permute(0, 2, 1)  # [B, HW, C]
         
-        for layer, norm in zip(self.layers, self.norms):
-            x_res = x_flat
-            x_flat = norm(x_flat)
-            x_flat, _ = layer(x_flat, x_flat, x_flat)
-            x_flat = x_flat + x_res
+        # Apply normalization first
+        x_flat = self.norm(x_flat)
+        
+        # Apply transformer blocks
+        for block in self.transformer_blocks:
+            x_flat = block(x_flat)
         
         x = x_flat.permute(0, 2, 1).view(B, C, H, W)
         return x
@@ -185,15 +217,14 @@ class GateLenPredictor(nn.Module):
 # Global variable to hold the loaded gate length predictor model
 _gate_len_predictor = None
 
-def load_gate_len_predictor(model_path: str = "gatelen_predictor.pt", device: str = "cuda"):
+def load_gate_len_predictor(model_path: str = None, device: str = "cuda"):
     """Load the pre-trained gate length predictor model."""
     global _gate_len_predictor
     
     if _gate_len_predictor is None:
-        # Default model path relative to genQC directory
+        # Default model path in the same directory as this file
         if model_path is None:
-            genqc_dir = os.path.join(os.path.dirname(__file__), '../../../..', 'genQC')
-            model_path = os.path.join(genqc_dir, "gatelen_predictor.pt")
+            model_path = os.path.join(os.path.dirname(__file__), "gatelen_predictor.pt")
         
         # Rebuild model with same architecture as training
         cond_emb_size = 256
@@ -229,7 +260,7 @@ def random_unitary(
     phase = diag_R / torch.abs(diag_R)
     Q = Q * phase.unsqueeze(0)
     I = torch.eye(d, dtype=dtype, device=device)
-    return total_matrix(sequence_to_matrices("WFNAPIG"))
+    return total_matrix(sequence_to_matrices("FNAA"))
 
 def reward(x):
     #k = 41.821  # steepness
@@ -252,17 +283,21 @@ def calculate_fidelity(circuit_str: str, target: torch.Tensor, device: str = "cu
     # Load the model if not already loaded
     model = load_gate_len_predictor(device=device)
     
+    '''
     # Apply some basic constraints (same as before)
     if circuit_str.count('P') > 2 or circuit_str.count('Q') > 2 or circuit_str.count('R') > 2:
-        return 0
+        return -inf
     for i in range(1, len(circuit_str)):
         if circuit_str[i] == circuit_str[i-1]:
-            return 0
-    
+            return -inf
+    '''
     # Generate the unitary matrix from the circuit
     circuit_mat = total_matrix(sequence_to_matrices(circuit_str))
+
+    if(torch.allclose(circuit_mat, target)):
+        return 10
+
     circuit_mat = circuit_mat.to(device)
-    
     # Add batch dimension for the model
     circuit_mat_batch = circuit_mat.unsqueeze(0)  # [1, d, d]
     
@@ -272,7 +307,8 @@ def calculate_fidelity(circuit_str: str, target: torch.Tensor, device: str = "cu
         predicted_length = logits.argmax(dim=1).item()
     
     # Calculate reward based on how close the prediction is to target
-    return -predicted_length
+    print(f"Predicted length: {predicted_length}")
+    return -predicted_length/12
 
 
 class ToyCircuitTask(GFNTask):
@@ -323,8 +359,8 @@ class ToyCircuitTrainer(StandardOnlineTrainer):
         cfg.model.num_layers = 4
 
         cfg.algo.method = "TB"
-        cfg.algo.max_nodes = 7
-        cfg.algo.max_len = 7
+        cfg.algo.max_nodes = 8
+        cfg.algo.max_len = 8
         cfg.algo.sampling_tau = 0.9
         cfg.algo.illegal_action_logreward = -75
         cfg.algo.train_random_action_prob = 0.0
@@ -368,11 +404,11 @@ def main():
     config.log_dir = f"./logs/debug_run_toy_circuit_{datetime.now().strftime('%Y%m%d_%H%M')}"
     config.device = "cuda"
     config.overwrite_existing_exp = True
-    config.num_training_steps = 100000
+    config.num_training_steps = 1000000
     config.checkpoint_every = 200
     config.num_workers = 0
     config.task.toy_circuit.num_qubits = 3
-    config.task.toy_circuit.gates = "ABDFGIKLNPQRSTUVWX"
+    config.task.toy_circuit.gates = "ABCDEFGHIJKLMNOPQR"
     config.print_every = 1
     config.cond.temperature.sample_dist = "constant"
     config.cond.temperature.dist_params = [2.0]

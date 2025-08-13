@@ -116,8 +116,8 @@ class ToyCircuitTrainer(StandardOnlineTrainer):
         cfg.model.num_layers = 4
 
         cfg.algo.method = "TB"
-        cfg.algo.max_nodes = 7
-        cfg.algo.max_len = 7
+        cfg.algo.max_nodes = 8
+        cfg.algo.max_len = 8
         cfg.algo.sampling_tau = 0.9
         cfg.algo.illegal_action_logreward = -75
         cfg.algo.train_random_action_prob = 0.0

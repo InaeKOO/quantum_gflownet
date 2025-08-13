@@ -85,10 +85,13 @@ def total_matrix(matrices: list[torch.Tensor]) -> torch.Tensor:
 
 # 예시
 if __name__ == "__main__":
-    seq = "ABCDEFGHIJKLMNOPQR"
-    mats = sequence_to_matrices(seq)
-    for letter, M in zip(seq, mats):
+    seq1 = "FNAPIGAB"
+    seq2 = "NAIPABFG"
+    mats1 = sequence_to_matrices(seq1)
+    mats2 = sequence_to_matrices(seq2)
+    for letter, M in zip(seq1, mats1):
         #print(f"{letter}: matrix shape = {M.mH@M}")
         pass
-    total = total_matrix(mats)
-    print(total.mH @ total)
+    total1 = total_matrix(mats1)
+    total2 = total_matrix(mats2)
+    print(total1.mH @ total2)
